@@ -165,8 +165,6 @@ sed -n '1,12p' /tmp/rdf2pg12-py-gdm-simple/instance.ypg
 PYTHONPATH=src pytest -q tests
 ```
 
-The repository also ships with a GitHub Actions workflow that runs the same checks on pushes and pull requests.
-
 ## RDF 1.2 notes
 
 The Python parser is the reference implementation for the most recent concrete syntax used in this repository, including:

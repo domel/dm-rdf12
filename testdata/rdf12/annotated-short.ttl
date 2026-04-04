@@ -1,0 +1,5 @@
+VERSION "1.2"
+PREFIX ex: <http://example.com/>
+PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+
+ex:a ex:name "Alice" ~ ex:t {| ex:statedBy ex:bob ; ex:recorded "2021-07-07"^^xsd:date |} .

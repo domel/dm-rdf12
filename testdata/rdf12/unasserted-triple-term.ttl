@@ -1,0 +1,4 @@
+VERSION "1.2"
+PREFIX ex: <http://example.com/>
+
+ex:alice ex:says <<( ex:bob ex:knows ex:carol )>> .

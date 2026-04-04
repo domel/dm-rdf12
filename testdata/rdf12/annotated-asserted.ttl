@@ -1,0 +1,8 @@
+VERSION "1.2"
+PREFIX ex: <http://example.com/>
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+
+ex:bob ex:knows ex:carol .
+ex:r1 rdf:reifies <<( ex:bob ex:knows ex:carol )>> .
+ex:r1 ex:confidence "0.9"^^xsd:decimal .

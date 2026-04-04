@@ -1,0 +1,4 @@
+VERSION "1.2"
+PREFIX ex: <http://example.com/>
+
+ex:greeting ex:text "مرحبا"@ar--rtl .

@@ -1,0 +1,23 @@
+@prefix schema: <http://schema.example/> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+schema:Organisation rdf:type rdfs:Class .
+schema:Person rdf:type rdfs:Class .
+
+schema:name rdf:type rdf:Property ;
+    rdfs:domain schema:Organisation ;
+    rdfs:range xsd:string .
+
+schema:creation rdf:type rdf:Property ;
+    rdfs:domain schema:Organisation ;
+    rdfs:range xsd:date .
+
+schema:ceo rdf:type rdf:Property ;
+    rdfs:domain schema:Organisation ;
+    rdfs:range schema:Person .
+
+schema:age rdf:type rdf:Property ;
+    rdfs:domain schema:Person ;
+    rdfs:range xsd:integer .

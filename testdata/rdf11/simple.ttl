@@ -1,0 +1,10 @@
+@prefix ex: <http://example.com/> .
+@prefix schema: <http://schema.example/> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+ex:Tesla schema:name "Tesla, Inc." ;
+    schema:creation "2003-07-01"^^xsd:date ;
+    schema:ceo ex:Elon .
+
+ex:Elon schema:name "Elon Musk" ;
+    schema:age 46 .

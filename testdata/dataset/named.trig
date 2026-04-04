@@ -1,0 +1,10 @@
+VERSION "1.2"
+PREFIX ex: <http://example.com/>
+
+{
+  ex:root ex:name "default" .
+}
+
+ex:g1 {
+  ex:root ex:mentions <<( ex:a ex:p ex:b )>> .
+}

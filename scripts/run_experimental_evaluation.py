@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections import Counter
 from pathlib import Path
-from statistics import median
+from statistics import mean, median, pstdev
 from time import perf_counter
 from typing import Callable
 
@@ -13,15 +13,18 @@ from rdf2pg12_py.mapping_cdm import map_cdm
 from rdf2pg12_py.mapping_gdm import map_gdm
 from rdf2pg12_py.mapping_sdm import map_sdm
 from rdf2pg12_py.rdf_model import canonical_term_key
-from rdf2pg12_py.schema import extract_schema
+from rdf2pg12_py.schema import SchemaModel, extract_schema
 
 
-ROOT = Path(__file__).resolve().parents[1]
-SYN_DIR = ROOT / "datasets" / "synthetic"
-PAPER_GENERATED = ROOT / "generated"
-YAGO_FULL = ROOT / "datasets" / "yago-wd-annotated-facts-full.nt"
+PYTHON_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = PYTHON_ROOT.parents[1]
+SYN_DIR = PROJECT_ROOT / "zbior_danych" / "synthetic"
+W3C_DIR = PROJECT_ROOT / "zbior_danych" / "w3c-rdf12"
+PAPER_GENERATED = PROJECT_ROOT / "artykul" / "generated"
+YAGO_FULL = PROJECT_ROOT / "zbior_danych" / "yago-wd-annotated-facts-full.nt"
 YAGO_SLICE_SIZES = [1000, 5000, 20000]
-TIMING_REPETITIONS = 3
+WARMUP_REPETITIONS = 1
+TIMING_REPETITIONS = 10
 
 
 def _asserted_quad_key(quad) -> tuple[str, str, str, str | None]:
@@ -67,6 +70,8 @@ def summarize_times(prefix: str, runs: list[float]) -> dict[str, object]:
     rounded_runs = [round(value, 4) for value in runs]
     return {
         f"{prefix}_time_s": round(median(runs), 4),
+        f"{prefix}_mean_s": round(mean(runs), 4),
+        f"{prefix}_stdev_s": round(pstdev(runs), 4),
         f"{prefix}_runs_s": rounded_runs,
         f"{prefix}_min_s": round(min(runs), 4),
         f"{prefix}_max_s": round(max(runs), 4),
@@ -100,6 +105,8 @@ def parse_with_repetitions(path: Path) -> tuple[object, str, dict[str, object]]:
     dataset = None
     dataset_mode = "reject"
     summary = None
+    for _ in range(WARMUP_REPETITIONS):
+        parse_dataset(path)
     for _ in range(TIMING_REPETITIONS):
         current_dataset, current_mode, duration = parse_dataset(path)
         current_summary = dataset_summary(current_dataset)
@@ -116,6 +123,8 @@ def parse_with_repetitions(path: Path) -> tuple[object, str, dict[str, object]]:
 def evaluate_sdm_mapping(dataset) -> dict[str, object]:
     runs: list[float] = []
     summary = None
+    for _ in range(WARMUP_REPETITIONS):
+        map_sdm(dataset, literal_mode="lossless")
     for _ in range(TIMING_REPETITIONS):
         (graph, _), duration = map_with_timing(map_sdm, dataset, literal_mode="lossless")
         current_summary = graph_summary(graph)
@@ -141,6 +150,9 @@ def evaluate_roundtrip_mapping(
     inverse_runs: list[float] = []
     summary = None
     roundtrip_exact = True
+    for _ in range(WARMUP_REPETITIONS):
+        graph, _ = map_fn(dataset, *args, **kwargs)
+        invert_fn(graph)
     for _ in range(TIMING_REPETITIONS):
         (graph, _), map_duration = map_with_timing(map_fn, dataset, *args, **kwargs)
         current_summary = graph_summary(graph)
@@ -168,7 +180,7 @@ def load_schema_variants(manifest: dict[str, object]) -> tuple[dict[str, object]
     schema_models: dict[str, object] = {}
     schema_metadata: dict[str, object] = {}
     for record in manifest["schema_files"]:
-        path = ROOT / record["file"]
+        path = PROJECT_ROOT / record["file"]
         schema_models[record["name"]] = extract_schema(read_rdf(path))
         schema_metadata[record["name"]] = record
     return schema_models, schema_metadata
@@ -181,7 +193,7 @@ def evaluate_workload(
     include_sdm: bool = True,
     include_gdm: bool = True,
 ) -> dict[str, object]:
-    path = ROOT / workload["file"]
+    path = PROJECT_ROOT / workload["file"]
     dataset, dataset_mode, parse_payload = parse_with_repetitions(path)
     result = {
         "name": workload["name"],
@@ -259,6 +271,7 @@ def schema_sweep_evaluation(
         workload,
         schema_variants={
             "full": schema_models["full"],
+            "partial": schema_models["partial"],
             "half": schema_models["half"],
             "none": schema_models["none"],
         },
@@ -267,13 +280,16 @@ def schema_sweep_evaluation(
     )
     result["schema_variants"] = {
         name: schema_metadata[name]
-        for name in ("full", "half", "none")
+        for name in ("full", "partial", "half", "none")
     }
     return result
 
 
 def prepare_yago_slices() -> list[Path]:
-    created = [ROOT / "datasets" / f"yago-wd-annotated-facts-{size}.nt" for size in YAGO_SLICE_SIZES]
+    created = [
+        PROJECT_ROOT / "zbior_danych" / f"yago-wd-annotated-facts-{size}.nt"
+        for size in YAGO_SLICE_SIZES
+    ]
     handles = {size: path.open("w", encoding="utf-8") for size, path in zip(YAGO_SLICE_SIZES, created)}
     try:
         for handle in handles.values():
@@ -323,7 +339,7 @@ def yago_slice_evaluation(paths: list[Path]) -> list[dict[str, object]]:
         gdm_payload = evaluate_roundtrip_mapping(dataset, map_gdm, invert_gdm, dataset_mode=dataset_mode)
         results.append(
             {
-                "file": str(path.relative_to(ROOT)),
+                "file": str(path.relative_to(PROJECT_ROOT)),
                 "source_triples": len(dataset.asserted_quads),
                 "input": dataset_summary(dataset),
                 **parse_payload,
@@ -331,6 +347,147 @@ def yago_slice_evaluation(paths: list[Path]) -> list[dict[str, object]]:
             }
         )
     return results
+
+
+def w3c_manifest_references() -> tuple[list[dict[str, object]], dict[str, object]]:
+    manifest_path = W3C_DIR / "manifest.json"
+    if not manifest_path.exists():
+        return [], {"available": False}
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    files_by_suite_section_name = {
+        (
+            record["suite"],
+            record["section"],
+            Path(record["file"]).name,
+        ): PROJECT_ROOT / record["file"]
+        for record in manifest["downloaded_files"]
+    }
+    references: list[dict[str, object]] = []
+    seen: set[tuple[str, str, str]] = set()
+    negative_actions = 0
+    for test in manifest["tests"]:
+        suite = test["suite"]
+        section = test["section"]
+        if not test["positive"]:
+            negative_actions += len(test["actions"])
+            continue
+        for role, names in (("action", test["actions"]), ("result", test["results"])):
+            for name in names:
+                key = (suite, section, Path(name).name)
+                path = files_by_suite_section_name.get(key)
+                if path is None or key in seen:
+                    continue
+                seen.add(key)
+                references.append(
+                    {
+                        "suite": suite,
+                        "section": section,
+                        "role": role,
+                        "file": str(path.relative_to(PROJECT_ROOT)),
+                        "path": path,
+                    }
+                )
+    metadata = {
+        "available": True,
+        "downloaded_files": len(manifest["downloaded_files"]),
+        "positive_references": len(references),
+        "negative_action_files": negative_actions,
+    }
+    return references, metadata
+
+
+def w3c_group_name(record: dict[str, object]) -> str:
+    suite = str(record["suite"])
+    section = str(record["section"])
+    labels = {
+        "rdf-n-triples": "N-Triples",
+        "rdf-n-quads": "N-Quads",
+        "rdf-turtle": "Turtle",
+        "rdf-trig": "TriG",
+    }
+    return f"{labels.get(suite, suite)} {section}"
+
+
+def evaluate_w3c_file(path: Path) -> dict[str, object]:
+    dataset, dataset_mode, parse_time = parse_dataset(path)
+    sdm_graph, _ = map_sdm(dataset, literal_mode="lossless")
+    gdm_graph, _ = map_gdm(dataset, dataset_mode=dataset_mode)
+    cdm_graph, _ = map_cdm(
+        dataset,
+        SchemaModel(),
+        literal_mode="lossless",
+        dataset_mode=dataset_mode,
+    )
+    gdm_roundtrip = invert_gdm(gdm_graph)
+    cdm_roundtrip = invert_cdm(cdm_graph)
+    return {
+        "parse_time_s": round(parse_time, 4),
+        "input": dataset_summary(dataset),
+        "sdm": graph_summary(sdm_graph),
+        "gdm": {
+            **graph_summary(gdm_graph),
+            "roundtrip_exact": exact_roundtrip(dataset, gdm_roundtrip),
+        },
+        "cdm": {
+            **graph_summary(cdm_graph),
+            "roundtrip_exact": exact_roundtrip(dataset, cdm_roundtrip),
+        },
+    }
+
+
+def w3c_evaluation() -> dict[str, object]:
+    references, metadata = w3c_manifest_references()
+    if not metadata.get("available"):
+        return metadata
+
+    groups: dict[str, dict[str, object]] = {}
+    failures: list[dict[str, str]] = []
+    for reference in references:
+        group_name = w3c_group_name(reference)
+        group = groups.setdefault(
+            group_name,
+            {
+                "files": 0,
+                "quads": 0,
+                "triple_terms": 0,
+                "named_graph_files": 0,
+                "sdm_success": 0,
+                "gdm_roundtrip": 0,
+                "cdm_roundtrip": 0,
+            },
+        )
+        path = reference["path"]
+        try:
+            payload = evaluate_w3c_file(path)
+        except Exception as exc:  # pragma: no cover - reported in JSON for external suites
+            failures.append({"file": str(path.relative_to(PROJECT_ROOT)), "error": str(exc)})
+            continue
+        group["files"] += 1
+        group["quads"] += payload["input"]["asserted_quads"]
+        group["triple_terms"] += payload["input"]["triple_terms"]
+        if payload["input"]["named_graphs"]:
+            group["named_graph_files"] += 1
+        group["sdm_success"] += 1
+        if payload["gdm"]["roundtrip_exact"]:
+            group["gdm_roundtrip"] += 1
+        if payload["cdm"]["roundtrip_exact"]:
+            group["cdm_roundtrip"] += 1
+
+    totals = {
+        "files": sum(group["files"] for group in groups.values()),
+        "quads": sum(group["quads"] for group in groups.values()),
+        "triple_terms": sum(group["triple_terms"] for group in groups.values()),
+        "named_graph_files": sum(group["named_graph_files"] for group in groups.values()),
+        "sdm_success": sum(group["sdm_success"] for group in groups.values()),
+        "gdm_roundtrip": sum(group["gdm_roundtrip"] for group in groups.values()),
+        "cdm_roundtrip": sum(group["cdm_roundtrip"] for group in groups.values()),
+    }
+    return {
+        **metadata,
+        "groups": groups,
+        "totals": totals,
+        "failures": failures,
+    }
 
 
 def main() -> None:
@@ -346,15 +503,18 @@ def main() -> None:
         "full": yago_full_stats(),
         "slices": yago_slice_evaluation(yago_slices),
     }
+    w3c = w3c_evaluation()
     payload = {
         "timing": {
             "repetitions": TIMING_REPETITIONS,
+            "warmup_repetitions": WARMUP_REPETITIONS,
             "aggregation": "median",
         },
         "synthetic": synthetic,
         "scaling": scaling,
         "annotated_sweep": annotated_sweep,
         "schema_sweep": schema_sweep,
+        "w3c": w3c,
         "yago": yago,
     }
     (PAPER_GENERATED / "experimental-results.json").write_text(

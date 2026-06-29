@@ -129,3 +129,24 @@ def test_blank_node_subject_in_nt_is_not_misparsed_as_prefixed_name(tmp_path: Pa
     assert len(quads) == 2
     assert quads[0].subject.identifier == "r1"
     assert quads[1].predicate.iri == RDF_REIFIES
+
+
+def test_nquads_line_graph_label_is_preserved(tmp_path: Path) -> None:
+    path = tmp_path / "sample.nq"
+    path.write_text(
+        '\n'.join(
+            [
+                'VERSION "1.2"',
+                '<http://example.com/s> <http://example.com/p> <<( <http://example.com/a> <http://example.com/b> "c" )>> <http://example.com/g> .',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    dataset = read_rdf(path, dataset_mode="native")
+
+    assert len(dataset.asserted_quads) == 1
+    quad = dataset.asserted_quads[0]
+    assert quad.graph_name == IriTerm("http://example.com/g")
+    assert isinstance(quad.object, TripleTerm)

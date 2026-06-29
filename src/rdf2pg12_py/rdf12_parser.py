@@ -16,6 +16,9 @@ from .rdf_model import (
     TripleTerm,
 )
 
+RDF_FIRST = "http://www.w3.org/1999/02/22-rdf-syntax-ns#first"
+RDF_REST = "http://www.w3.org/1999/02/22-rdf-syntax-ns#rest"
+RDF_NIL = "http://www.w3.org/1999/02/22-rdf-syntax-ns#nil"
 XSD_BOOLEAN = "http://www.w3.org/2001/XMLSchema#boolean"
 XSD_DECIMAL = "http://www.w3.org/2001/XMLSchema#decimal"
 XSD_DOUBLE = "http://www.w3.org/2001/XMLSchema#double"
@@ -33,6 +36,7 @@ class ParseError(ValueError):
 class _ObjectTemplate:
     predicate: IriTerm
     object: object
+    annotations: tuple["_ObjectTemplate", ...] = ()
 
 
 class Rdf12Parser:
@@ -43,11 +47,13 @@ class Rdf12Parser:
         source: str,
         base_iri: str | None = None,
         allow_graph_blocks: bool = False,
+        line_quads: bool = False,
     ) -> None:
         self.text = text
         self.source = source
         self.base_iri = base_iri
         self.allow_graph_blocks = allow_graph_blocks
+        self.line_quads = line_quads
         self.pos = 0
         self.line = 1
         self.column = 1
@@ -55,6 +61,8 @@ class Rdf12Parser:
         self.quads: list[RdfQuad] = []
         self._bnode_counter = 0
         self._current_graph: IriTerm | BlankNodeTerm | None = None
+        self._graph_block_depth = 0
+        self._last_parsed_reified_triple = False
 
     def parse(self) -> list[RdfQuad]:
         while True:
@@ -63,6 +71,12 @@ class Rdf12Parser:
                 return self.quads
 
             if self._consume_keyword("VERSION"):
+                self._parse_version()
+                continue
+            if self._consume_keyword("version"):
+                self._parse_version()
+                continue
+            if self._consume_keyword("@version"):
                 self._parse_version()
                 continue
             if self._consume_keyword("PREFIX"):
@@ -83,7 +97,7 @@ class Rdf12Parser:
     def _parse_version(self) -> None:
         self._skip_ws_and_comments()
         version = self._parse_string_literal_value()
-        if version != "1.2":
+        if version not in {"1.2", "1.2-basic"}:
             self._error(f'Unsupported RDF VERSION "{version}"')
         self._consume_char(".")
 
@@ -114,7 +128,9 @@ class Rdf12Parser:
             self._parse_graph_block(None)
             return
 
+        self._last_parsed_reified_triple = False
         subject = self._parse_subject_term()
+        subject_was_reified_triple = self._last_parsed_reified_triple
         self._skip_ws_and_comments()
 
         if self.allow_graph_blocks and self._peek() == "{":
@@ -123,18 +139,42 @@ class Rdf12Parser:
             self._parse_graph_block(subject)
             return
 
+        if self.line_quads:
+            predicate = self._parse_verb()
+            object_term = self._parse_object_term()
+            self._skip_ws_and_comments()
+            graph_name = None
+            if self._peek() != ".":
+                graph_name = self._parse_iri_or_blank_node()
+                if graph_name is None:
+                    self._error("Expected N-Quads graph label")
+            self.quads.append(RdfQuad(subject, predicate, object_term, graph_name))
+            self._skip_ws_and_comments()
+            self._expect_char(".")
+            return
+
+        if subject_was_reified_triple and (
+            self._peek() == "." or (self._graph_block_depth > 0 and self._peek() == "}")
+        ):
+            self._consume_char(".")
+            return
+
         self._parse_predicate_object_list(subject)
         self._skip_ws_and_comments()
+        if self._graph_block_depth > 0 and self._peek() == "}":
+            return
         self._expect_char(".")
 
     def _parse_graph_block(self, graph_name: IriTerm | BlankNodeTerm | None) -> None:
         previous_graph = self._current_graph
         self._current_graph = graph_name
+        self._graph_block_depth += 1
         self._expect_char("{")
         while True:
             self._skip_ws_and_comments()
             if self._consume_char("}"):
                 self._current_graph = previous_graph
+                self._graph_block_depth -= 1
                 return
             self._parse_statement()
 
@@ -150,7 +190,7 @@ class Rdf12Parser:
                 if not self._consume_char(";"):
                     break
             self._skip_ws_and_comments()
-            if self._peek() in ".|}":
+            if self._peek() in ".|}]":
                 return
 
     def _parse_object_list(self, subject: object, predicate: IriTerm) -> None:
@@ -164,39 +204,57 @@ class Rdf12Parser:
         object_term = self._parse_object_term()
         self.quads.append(RdfQuad(subject, predicate, object_term, self._current_graph))
 
-        self._skip_ws_and_comments()
-        reifiers: list[IriTerm | BlankNodeTerm] = []
-        saw_tilde = False
-        while self._consume_char("~"):
-            saw_tilde = True
+        triple_term = TripleTerm(subject, predicate, object_term)
+
+        while True:
             self._skip_ws_and_comments()
-            if self._starts_with("{|") or self._peek() in ",;.":
-                reifiers.append(self._fresh_blank_node())
+            if self._starts_with("{|"):
+                reifier = self._fresh_blank_node()
+                self.quads.append(
+                    RdfQuad(reifier, IriTerm(RDF_REIFIES), triple_term, self._current_graph)
+                )
+                self._emit_annotation_templates(reifier, self._parse_annotation_block())
+                continue
+
+            if not self._consume_char("~"):
+                return
+
+            self._skip_ws_and_comments()
+            if self._starts_with("{|") or self._peek() in ",;.]}" or self._peek() == "":
+                reifier = self._fresh_blank_node()
             else:
                 reifier = self._parse_iri_or_blank_node()
                 if reifier is None:
                     self._error("Expected IRI or blank node after '~'")
-                reifiers.append(reifier)
+
+            self.quads.append(
+                RdfQuad(reifier, IriTerm(RDF_REIFIES), triple_term, self._current_graph)
+            )
             self._skip_ws_and_comments()
+            while self._starts_with("{|"):
+                self._emit_annotation_templates(reifier, self._parse_annotation_block())
+                self._skip_ws_and_comments()
 
-        if self._starts_with("{|"):
-            if not reifiers:
-                reifiers.append(self._fresh_blank_node())
-            triple_term = TripleTerm(subject, predicate, object_term)
-            for reifier in reifiers:
+    def _emit_annotation_templates(
+        self,
+        reifier: IriTerm | BlankNodeTerm,
+        templates: list[_ObjectTemplate],
+    ) -> None:
+        for template in templates:
+            self.quads.append(
+                RdfQuad(reifier, template.predicate, template.object, self._current_graph)
+            )
+            if template.annotations:
+                nested_reifier = self._fresh_blank_node()
                 self.quads.append(
-                    RdfQuad(reifier, IriTerm(RDF_REIFIES), triple_term, self._current_graph)
-                )
-            templates = self._parse_annotation_block()
-            for reifier in reifiers:
-                for template in templates:
-                    self.quads.append(
-                        RdfQuad(reifier, template.predicate, template.object, self._current_graph)
+                    RdfQuad(
+                        nested_reifier,
+                        IriTerm(RDF_REIFIES),
+                        TripleTerm(reifier, template.predicate, template.object),
+                        self._current_graph,
                     )
-            return
-
-        if saw_tilde:
-            self._error("Annotation reifiers after an object require a following '{| ... |}' block")
+                )
+                self._emit_annotation_templates(nested_reifier, list(template.annotations))
 
     def _parse_annotation_block(self) -> list[_ObjectTemplate]:
         self._expect_string("{|")
@@ -206,8 +264,14 @@ class Rdf12Parser:
             predicate = self._parse_verb()
             while True:
                 object_term = self._parse_object_term()
-                templates.append(_ObjectTemplate(predicate, object_term))
                 self._skip_ws_and_comments()
+                nested_annotations: list[_ObjectTemplate] = []
+                while self._starts_with("{|"):
+                    nested_annotations.extend(self._parse_annotation_block())
+                    self._skip_ws_and_comments()
+                templates.append(
+                    _ObjectTemplate(predicate, object_term, tuple(nested_annotations))
+                )
                 if not self._consume_char(","):
                     break
             self._skip_ws_and_comments()
@@ -256,6 +320,12 @@ class Rdf12Parser:
         bnode = self._parse_blank_node()
         if bnode is not None:
             return bnode
+        bnode_list = self._parse_blank_node_property_list()
+        if bnode_list is not None:
+            return bnode_list
+        collection = self._parse_collection()
+        if collection is not None:
+            return collection
         literal = self._parse_literal()
         if literal is not None:
             return literal
@@ -270,13 +340,19 @@ class Rdf12Parser:
         iri = self._parse_iri_term()
         if iri is not None:
             return iri
-        return self._parse_blank_node()
+        bnode = self._parse_blank_node()
+        if bnode is not None:
+            return bnode
+        bnode_list = self._parse_blank_node_property_list()
+        if bnode_list is not None:
+            return bnode_list
+        return self._parse_collection()
 
     def _parse_triple_term(self) -> TripleTerm:
         self._expect_string("<<(")
         self._skip_ws_and_comments()
-        subject = self._parse_iri_or_blank_node()
-        if subject is None:
+        subject = self._parse_resourceish_term()
+        if not isinstance(subject, (IriTerm, BlankNodeTerm)):
             self._error("Triple term subject must be an IRI or blank node")
         self._skip_ws_and_comments()
         predicate = self._parse_iri_term()
@@ -291,8 +367,8 @@ class Rdf12Parser:
     def _parse_reified_triple(self) -> IriTerm | BlankNodeTerm:
         self._expect_string("<<")
         self._skip_ws_and_comments()
-        subject = self._parse_iri_or_blank_node()
-        if subject is None:
+        subject = self._parse_resourceish_term()
+        if not isinstance(subject, (IriTerm, BlankNodeTerm)):
             self._error("Reified triple subject must be an IRI or blank node")
         self._skip_ws_and_comments()
         predicate = self._parse_verb()
@@ -317,7 +393,52 @@ class Rdf12Parser:
                 self._current_graph,
             )
         )
+        self._last_parsed_reified_triple = True
         return reifier
+
+    def _parse_blank_node_property_list(self) -> BlankNodeTerm | None:
+        self._skip_ws_and_comments()
+        if self._peek() != "[":
+            return None
+        self._advance(1)
+        blank_node = self._fresh_blank_node()
+        self._skip_ws_and_comments()
+        if self._consume_char("]"):
+            return blank_node
+        self._parse_predicate_object_list(blank_node)
+        self._skip_ws_and_comments()
+        self._expect_char("]")
+        return blank_node
+
+    def _parse_collection(self) -> IriTerm | BlankNodeTerm | None:
+        self._skip_ws_and_comments()
+        if self._peek() != "(":
+            return None
+        self._advance(1)
+        self._skip_ws_and_comments()
+        if self._consume_char(")"):
+            return IriTerm(RDF_NIL)
+
+        head: BlankNodeTerm | None = None
+        previous: BlankNodeTerm | None = None
+        while True:
+            self._skip_ws_and_comments()
+            if self._peek() == ")":
+                self._advance(1)
+                if previous is not None:
+                    self.quads.append(
+                        RdfQuad(previous, IriTerm(RDF_REST), IriTerm(RDF_NIL), self._current_graph)
+                    )
+                return head if head is not None else IriTerm(RDF_NIL)
+
+            item = self._parse_object_term()
+            cell = self._fresh_blank_node()
+            if head is None:
+                head = cell
+            if previous is not None:
+                self.quads.append(RdfQuad(previous, IriTerm(RDF_REST), cell, self._current_graph))
+            self.quads.append(RdfQuad(cell, IriTerm(RDF_FIRST), item, self._current_graph))
+            previous = cell
 
     def _parse_iri_or_blank_node(self) -> IriTerm | BlankNodeTerm | None:
         iri = self._parse_iri_term()
@@ -407,11 +528,14 @@ class Rdf12Parser:
         self._error("Unterminated IRI reference")
 
     def _parse_string_literal_value(self) -> str:
-        self._expect_char('"')
+        quote = self._peek()
+        if quote not in {"'", '"'}:
+            self._error('Expected \'"\'')
+        self._advance(1)
         value: list[str] = []
         while not self._eof():
             ch = self._peek()
-            if ch == '"':
+            if ch == quote:
                 self._advance(1)
                 return "".join(value)
             if ch == "\\":
@@ -642,5 +766,6 @@ def parse_rdf_file(path: Path) -> list[RdfQuad]:
         source=str(path),
         base_iri=path.resolve().as_uri(),
         allow_graph_blocks=suffix in {".trig", ".nq"},
+        line_quads=suffix == ".nq",
     )
     return parser.parse()

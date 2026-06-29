@@ -6,8 +6,9 @@ from pathlib import Path
 from typing import Iterable
 
 
-ROOT = Path(__file__).resolve().parents[1]
-DATASET_DIR = ROOT / "datasets" / "synthetic"
+PYTHON_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = PYTHON_ROOT.parents[1]
+DATASET_DIR = PROJECT_ROOT / "zbior_danych" / "synthetic"
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,7 +43,7 @@ WORKLOADS = [
     WorkloadConfig("S5-Named10", "s5-named10.trig", entity_count=120, relation_count=240, annotated_ratio=0.20, quoted_ratio=0.20, named_graph_count=10),
 ]
 
-SCALING_ENTITY_COUNTS = [250, 1000, 5000]
+SCALING_ENTITY_COUNTS = [250, 1000, 5000, 10000]
 ANNOTATED_SWEEP_RATIOS = [0.0, 0.25, 0.50, 0.75, 1.0]
 SCHEMA_PROPERTY_ORDER = [
     "voc:name",
@@ -348,7 +349,7 @@ def generate_workload(config: WorkloadConfig) -> tuple[str, dict[str, int]]:
 def workload_record(config: WorkloadConfig, path: Path, stats: dict[str, int]) -> dict[str, object]:
     return {
         "name": config.name,
-        "file": str(path.relative_to(ROOT)),
+        "file": str(path.relative_to(PROJECT_ROOT)),
         "entity_count": config.entity_count,
         "relation_count": config.relation_count,
         "annotated_ratio": config.annotated_ratio,
@@ -390,7 +391,7 @@ def main() -> None:
         manifest["schema_files"].append(
             {
                 "name": schema_name,
-                "file": str(path.relative_to(ROOT)),
+                "file": str(path.relative_to(PROJECT_ROOT)),
                 "declared_properties": len(property_iris),
                 "property_coverage": round(len(property_iris) / len(SCHEMA_PROPERTY_ORDER), 3),
             }

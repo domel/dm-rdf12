@@ -230,7 +230,7 @@ def map_cdm(
 
     def add_type_assertion(subject_node: PgNode, type_iri: str, graph_name) -> None:
         assertion = {"iri": IriValue(type_iri)}
-        if dataset_mode in {"named-graph-property", "native"} and graph_name is not None:
+        if dataset_mode in {"named-graph-property", "native"}:
             assertion["graph"] = _graph_value(graph_name)
         _append_unique_property(subject_node.properties, "rdfTypeAssertions", assertion)
 

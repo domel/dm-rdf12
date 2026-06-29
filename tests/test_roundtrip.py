@@ -4,7 +4,7 @@ from pathlib import Path
 
 from rdf2pg12_py.inverse_mapping import invert_cdm, invert_gdm
 from rdf2pg12_py.io_rdf import read_rdf
-from rdf2pg12_py.mapping_cdm import map_cdm
+from rdf2pg12_py.mapping_cdm import DEFAULT_GRAPH_MARKER, map_cdm
 from rdf2pg12_py.mapping_common import requires_lifting
 from rdf2pg12_py.mapping_gdm import map_gdm
 from rdf2pg12_py.mapping_sdm import map_sdm
@@ -136,6 +136,55 @@ def test_cdm_roundtrip_preserves_named_graph_fragment_in_native_mode() -> None:
     )
     recovered = invert_cdm(graph)
 
+    _assert_same_quads(dataset, recovered)
+
+
+def test_cdm_records_default_graph_marker_for_type_assertions_in_native_mode(tmp_path: Path) -> None:
+    dataset_path = tmp_path / "default-type.trig"
+    dataset_path.write_text(
+        "\n".join(
+            [
+                'VERSION "1.2"',
+                "PREFIX ex: <http://example.com/>",
+                "",
+                "{",
+                "  ex:a a ex:Thing .",
+                "}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    schema_path = tmp_path / "schema.ttl"
+    schema_path.write_text(
+        "\n".join(
+            [
+                "@prefix ex: <http://example.com/> .",
+                "@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .",
+                "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .",
+                "",
+                "ex:Thing rdf:type rdfs:Class .",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    dataset = read_rdf(dataset_path, dataset_mode="native")
+    schema_dataset = read_rdf(schema_path, dataset_mode="flatten")
+
+    graph, _ = map_cdm(
+        dataset,
+        extract_schema(schema_dataset),
+        literal_mode="lossless",
+        dataset_mode="native",
+    )
+    recovered = invert_cdm(graph)
+
+    subject = next(node for node in graph.nodes if node.properties.get("iri") == "http://example.com/a")
+    assert subject.properties["rdfTypeAssertions"] == [
+        {"iri": IriValue("http://example.com/Thing"), "graph": DEFAULT_GRAPH_MARKER}
+    ]
     _assert_same_quads(dataset, recovered)
 
 

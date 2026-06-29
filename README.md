@@ -165,6 +165,24 @@ sed -n '1,12p' /tmp/rdf2pg12-py-gdm-simple/instance.ypg
 PYTHONPATH=src pytest -q tests
 ```
 
+## Paper experiment tooling
+
+The `scripts/` directory contains the tooling used to generate and evaluate the paper workloads:
+
+- `generate_synthetic_rdf12.py` creates the synthetic RDF 1.2 workloads and schema variants.
+- `fetch_w3c_rdf12_tests.py` downloads the positive W3C RDF 1.2 test-suite material used by the evaluation.
+- `run_experimental_evaluation.py` runs the synthetic, W3C, and YAGO-derived evaluations and writes the machine-readable results consumed by the paper.
+
+These scripts are intended to run from this package inside the larger paper workspace, where the sibling data and article paths exist. The YAGO-derived evaluation also requires the full `yago-wd-annotated-facts-full.nt` source file to be present.
+
+Typical command sequence:
+
+```bash
+PYTHONPATH=src python3 scripts/generate_synthetic_rdf12.py
+PYTHONPATH=src python3 scripts/fetch_w3c_rdf12_tests.py
+PYTHONPATH=src python3 scripts/run_experimental_evaluation.py
+```
+
 ## RDF 1.2 notes
 
 The Python parser is the reference implementation for the most recent concrete syntax used in this repository, including:
@@ -173,7 +191,10 @@ The Python parser is the reference implementation for the most recent concrete s
 - reification shortcut forms such as `<< :s :p :o >>`,
 - explicit reifier shortcut `~`,
 - annotation blocks `{| ... |}`,
-- directional language-tagged strings.
+- nested annotation blocks,
+- directional language-tagged strings,
+- RDF collections and blank-node property lists,
+- TriG graph blocks and N-Quads graph labels.
 
 The parser normalizes concrete syntax to the internal RDF 1.2 term model before mapping.
 
